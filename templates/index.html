@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Habitat-Sim Trajectory Creator</title>
+    <style>
+        /* General layout styles (mostly unchanged) */
+        body { font-family: sans-serif; display: flex; height: 100vh; margin: 0; background: #f0f0f0; }
+        #main-container { display: flex; flex: 1; }
+        #viewer-panel { flex: 3; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 20px; background: #333; position: relative; }
+        #viewer-img { max-width: 100%; max-height: 90vh; border: 2px solid #555; background: #111; }
+        #controls-panel { flex: 1; padding: 20px; background: #fff; border-left: 1px solid #ccc; display: flex; flex-direction: column; min-width: 400px; overflow-y: auto; }
+        .control-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 20px; }
+        .control-grid button { padding: 15px; font-size: 16px; cursor: pointer; border: 1px solid #ccc; background: #f9f9f9; }
+        .span-3 { grid-column: span 3; }
+        .info-box { background: #eee; padding: 10px; border-radius: 5px; margin-bottom: 20px; font-family: monospace; }
+        h2, h3 { margin-top: 0; }
+        button.success { background-color: #28a745; color: #fff; border: none; }
+        button.action { background-color: #007bff; color: #fff; border: none; }
+        button.danger { background-color: #dc3545; color: #fff; border: none; }
+        .keyboard-info { background: #e9f7ff; border: 1px solid #bce8f1; padding: 10px; border-radius: 5px; margin-bottom: 20px; font-size: 0.9em; }
+
+        /* Waypoint styles (unchanged) */
+        #waypoints-list { list-style-type: none; padding: 0; max-height: 25vh; overflow-y: auto; border: 1px solid #ddd; margin-bottom: 15px; }
+        #waypoints-list li { padding: 8px 10px; border-bottom: 1px solid #eee; display: flex; align-items: center; font-size: 0.9em;}
+        #waypoints-list li span { display: inline-block; width: 12px; height: 12px; border-radius: 50%; margin-right: 10px; flex-shrink: 0; }
+        .waypoint-normal span { background-color: gray; }
+        .waypoint-scan_start span { background-color: #90ee90; } /* lightgreen */
+        .waypoint-scan_stop span { background-color: #006400; } /* darkgreen */
+
+        /* Playback styles (unchanged) */
+        .io-panel { display: flex; gap: 10px; margin-top: auto; padding-top: 20px; border-top: 1px solid #eee; }
+        .io-panel button { flex: 1; padding: 12px; font-size: 14px; }
+        #playback-overlay { position: absolute; top: 20px; left: 20px; background: rgba(0,0,0,0.7); color: white; padding: 10px 15px; border-radius: 5px; font-family: monospace; display: none; z-index: 10; }
+    </style>
+</head>
+<body>
+    <div id="main-container">
+        <div id="viewer-panel">
+            <img id="viewer-img" src="" alt="Loading simulator view...">
+            <div id="playback-overlay"></div>
+        </div>
+        <div id="controls-panel">
+            <h2>Controls</h2>
+            <div class="keyboard-info">
+                <b>Movement:</b> W/A/S/D, ←/→ Arrows, X/Z
+                <br><b>Waypoints:</b> N (Normal), B (Scan Start), M (Scan Stop)
+            </div>
+            <div class="control-grid">
+                <button onmousedown="handleSingleAction('strafe_left')">Strafe L (A)</button>
+                <button onmousedown="handleSingleAction('move_forward')">Forward (W)</button>
+                <button onmousedown="handleSingleAction('strafe_right')">Strafe R (D)</button>
+                <button onmousedown="handleSingleAction('turn_left')">Turn Left (←)</button>
+                <button onmousedown="handleSingleAction('move_backward')">Backward (S)</button>
+                <button onmousedown="handleSingleAction('turn_right')">Turn Right (→)</button>
+                <button onmousedown="handleSingleAction('move_up')">Up (X)</button>
+                <div></div>
+                <button onmousedown="handleSingleAction('move_down')">Down (Z)</button>
+            </div>
+
+            <h3>Current Position</h3>
+            <div id="info" class="info-box">Initializing...</div>
+
+            <h3>Waypoints</h3>
+            <div class="control-grid">
+                 <button onclick="addWaypoint('normal')">Add Normal (N)</button>
+                 <button onclick="addWaypoint('scan_start')" style="background-color: #90ee90;">Scan Start (B)</button>
+                 <button onclick="addWaypoint('scan_stop')" style="background-color: #006400; color: white;">Scan Stop (M)</button>
+            </div>
+            <ul id="waypoints-list"></ul>
+
+            <h3>Trajectory Playback</h3>
+            <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 20px;">
+                <button id="play-button" class="action" onclick="playTrajectory()">View Trajectory</button>
+                <div style="display: flex; align-items: center; gap: 5px;">
+                    <input type="checkbox" id="save-trajectory-checkbox" style="margin: 0; transform: scale(1.2);">
+                    <label for="save-trajectory-checkbox">Save</label>
+                </div>
+                <label for="speed-input" style="margin-left: auto;">Speed:</label>
+                <input type="number" id="speed-input" value="1.0" min="0.1" max="10" step="0.1" style="width: 60px;">
+            </div>
+
+            <div class="io-panel">
+                <input type="file" id="import-file" accept=".json" style="display:none;" onchange="importWaypoints(event)">
+                <button onclick="document.getElementById('import-file').click()">Import JSON</button>
+                <button onclick="exportWaypointsJson()">Export JSON</button>
+                <button class="success" onclick="exportTrajectoryTxt()">Export Traj.txt</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // --- State and Constants ---
+        let state = {
+            position: [0.15, 0.90, 2.91],
+            yaw: 105.0,
+            loading: false
+        };
+        let waypoints = [];
+        let isPlaying = false;
+        const INTERP_POS_STEP = 0.05;
+        const INTERP_ROT_STEP = 2.0;
+
+        // --- DOM Elements ---
+        const viewerImg = document.getElementById("viewer-img");
+        const infoBox = document.getElementById("info");
+        const waypointsList = document.getElementById("waypoints-list");
+        const playButton = document.getElementById("play-button");
+        const playbackOverlay = document.getElementById("playback-overlay");
+        const keysPressed = {};
+
+        // --- REFACTORED: Unified Backend Communication ---
+        async function updateAgentPose(payload) {
+            if (state.loading) return;
+            state.loading = true;
+
+            try {
+                const response = await fetch("/control", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(payload),
+                });
+
+                if (!response.ok) {
+                    alert(`Error: ${response.statusText}`);
+                } else {
+                    const data = await response.json();
+                    viewerImg.src = data.image;
+                    state.position = data.position;
+                    state.yaw = normalizeYaw(data.yaw);
+                    updateUI();
+                }
+            } catch (error) {
+                console.error("Fetch error:", error);
+                alert("Could not connect to the server.");
+            } finally {
+                state.loading = false;
+            }
+        }
+
+        // --- Simplified Wrappers for updating the pose ---
+        function handleAction(actions) {
+            const payload = { ...state, actions };
+            updateAgentPose(payload);
+        }
+
+        function renderPose(pose, saveInfo = null) {
+            const payload = { position: pose.position, yaw: pose.yaw, actions: [] };
+            if (saveInfo) {
+                // Copy all properties from saveInfo to the payload
+                Object.assign(payload, saveInfo);
+            }
+            return updateAgentPose(payload);
+        }
+
+        function handleSingleAction(action) {
+            handleAction([action]);
+        }
+
+        // --- UI and Waypoint Functions (Unchanged) ---
+        function updateUI() {
+            infoBox.textContent = `Pos: (${state.position[0].toFixed(2)}, ${state.position[1].toFixed(2)}, ${state.position[2].toFixed(2)}) | Yaw: ${state.yaw.toFixed(1)}°`;
+        }
+        function renderWaypoints() {
+            waypointsList.innerHTML = "";
+            waypoints.forEach((wp, index) => {
+                const li = document.createElement("li");
+                li.className = `waypoint-${wp.type}`;
+                const typeText = wp.type.replace('_', ' ').replace(/\b\w/g, l => l.toUpperCase());
+                li.innerHTML = `<span></span> <b>#${index + 1}:</b> ${typeText} at (${wp.position[0].toFixed(2)}, ${wp.position[1].toFixed(2)}, ${wp.position[2].toFixed(2)})`;
+                waypointsList.appendChild(li);
+            });
+            waypointsList.scrollTop = waypointsList.scrollHeight;
+        }
+        function addWaypoint(type = 'normal') {
+            if (state.loading || isPlaying) return;
+            waypoints.push({ position: [...state.position], yaw: state.yaw, type: type });
+            renderWaypoints();
+        }
+
+        // --- Import / Export / Trajectory Generation ---
+        function importWaypoints(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                try {
+                    const importedWps = JSON.parse(e.target.result);
+                    if (Array.isArray(importedWps) && importedWps.every(wp => wp.position && typeof wp.yaw !== 'undefined' && wp.type)) {
+                        waypoints = importedWps;
+                        renderWaypoints();
+                        alert(`Successfully imported ${waypoints.length} waypoints.`);
+                    } else { alert("Invalid waypoint JSON format."); }
+                } catch (error) { alert("Failed to parse JSON file: " + error); }
+            };
+            reader.readAsText(file);
+        }
+        function exportWaypointsJson() {
+            if (waypoints.length === 0) return alert("No waypoints to export.");
+            const content = JSON.stringify(waypoints, null, 2);
+            triggerDownload(content, 'waypoints.json', 'application/json');
+        }
+        function exportTrajectoryTxt() {
+            if (waypoints.length < 2) return alert("Need at least 2 waypoints to generate a trajectory.");
+            const trajectory = generateTrajectory();
+            let content = trajectory.map(pose => poseTo4x4MatrixString(pose)).join('\n');
+            triggerDownload(content, 'traj.txt', 'text/plain');
+        }
+        function triggerDownload(content, fileName, contentType) {
+            const blob = new Blob([content], { type: contentType });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url; a.download = fileName; document.body.appendChild(a); a.click(); document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+        function generateTrajectory() {
+            if (waypoints.length < 1) return [];
+            const trajectory = [{ ...waypoints[0] }];
+            for (let i = 0; i < waypoints.length - 1; i++) {
+                const startWp = waypoints[i];
+                const endWp = waypoints[i + 1];
+                if (startWp.type === 'scan_start' && endWp.type === 'scan_stop') {
+                    const yawDiff = getShortestAngleDiff(startWp.yaw, endWp.yaw);
+                    const numSteps = Math.ceil(Math.abs(yawDiff) / INTERP_ROT_STEP);
+                    for (let j = 1; j <= numSteps; j++) {
+                        const t = j / numSteps;
+                        const newYaw = normalizeYaw(startWp.yaw + yawDiff * t);
+                        trajectory.push({ position: startWp.position, yaw: newYaw });
+                    }
+                } else {
+                    const posDiff = vec3.sub(endWp.position, startWp.position);
+                    const distance = vec3.len(posDiff);
+                    const numPosSteps = Math.ceil(distance / INTERP_POS_STEP);
+                    const yawDiff = getShortestAngleDiff(startWp.yaw, endWp.yaw);
+                    const numRotSteps = Math.ceil(Math.abs(yawDiff) / INTERP_ROT_STEP);
+                    const numSteps = Math.max(1, numPosSteps, numRotSteps);
+                    for (let j = 1; j <= numSteps; j++) {
+                        const t = j / numSteps;
+                        const newYaw = normalizeYaw(startWp.yaw + yawDiff * t);
+                        trajectory.push({ position: vec3.lerp(startWp.position, endWp.position, t), yaw: newYaw });
+                    }
+                }
+            }
+            const lastWp = waypoints[waypoints.length - 1];
+            if (lastWp.type === 'scan_start') {
+                 const yawDiff = 45.0;
+                 const numSteps = Math.ceil(Math.abs(yawDiff) / INTERP_ROT_STEP);
+                 for (let j = 1; j <= numSteps; j++) {
+                    const t = j / numSteps;
+                    const newYaw = normalizeYaw(lastWp.yaw + yawDiff * t);
+                    trajectory.push({ position: lastWp.position, yaw: newYaw });
+                }
+            }
+            return trajectory;
+        }
+
+        // START: MODIFIED FUNCTION
+        async function playTrajectory() {
+            if (isPlaying) return;
+            if (waypoints.length < 2) return alert("Need at least 2 waypoints to view a trajectory.");
+
+            isPlaying = true;
+            playButton.textContent = "Stop";
+            playButton.className = "danger";
+            playButton.onclick = stopTrajectory;
+            playbackOverlay.style.display = 'block';
+
+            const trajectory = generateTrajectory();
+            const speed = parseFloat(document.getElementById('speed-input').value) || 1.0;
+            const delay = 33 / speed;
+            const shouldSave = document.getElementById('save-trajectory-checkbox').checked;
+
+            if (shouldSave) {
+                console.log("Save mode enabled. Starting a new save session on the server.");
+            }
+
+            for (let i = 0; i < trajectory.length; i++) {
+                if (!isPlaying) break; // Exit loop if 'Stop' was clicked
+
+                const pose = trajectory[i];
+                playbackOverlay.textContent = `Frame: ${i + 1} / ${trajectory.length}`;
+
+                // Create save info object if the checkbox is ticked
+                const saveInfo = shouldSave ? {
+                    save: true,
+                    frame_index: i + 1, // Start frame index from 1 for file naming
+                    is_first_frame: (i === 0) // Flag to tell server to overwrite traj.txt
+                } : null;
+
+                // Await the render function, passing the save info
+                await renderPose(pose, saveInfo);
+
+                await new Promise(resolve => setTimeout(resolve, delay));
+            }
+
+            stopTrajectory(); // Reset UI state after finishing or stopping
+        }
+        // END: MODIFIED FUNCTION
+
+        function stopTrajectory() {
+            isPlaying = false;
+            playButton.textContent = "View Trajectory";
+            playButton.className = "action";
+            playButton.onclick = playTrajectory;
+            playbackOverlay.style.display = 'none';
+        }
+
+        // --- Math and Helper Functions ---
+        const vec3 = {
+            sub: (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]],
+            len: (a) => Math.sqrt(a[0] * a[0] + a[1] * a[1] + a[2] * a[2]),
+            lerp: (a, b, t) => [ a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t ]
+        };
+
+        function normalizeYaw(yaw) {
+            return ((yaw % 360) + 360) % 360;
+        }
+
+        function getShortestAngleDiff(a, b) {
+            let diff = (b - a) % 360;
+            if (diff > 180) diff -= 360;
+            if (diff < -180) diff += 360;
+            return diff;
+        }
+
+        function poseTo4x4MatrixString({ position, yaw }) {
+            const yawRad = yaw * (Math.PI / 180.0);
+            const cosY = Math.cos(yawRad);
+            const sinY = Math.sin(yawRad);
+            const matrix = [
+                [cosY,  0, sinY,  position[0]],
+                [0,     1, 0,     position[1]],
+                [-sinY, 0, cosY,  position[2]],
+                [0,     0, 0,     1]
+            ];
+            const formatNumber = (num) => {
+                if (num === 0.0) return "0.000000000000000000e+00";
+                const expStr = num.toExponential(18);
+                const [mantissa, exponent] = expStr.split('e');
+                const sign = parseInt(exponent) >= 0 ? '+' : '-';
+                const paddedExponent = Math.abs(parseInt(exponent)).toString().padStart(2, '0');
+                return `${mantissa}e${sign}${paddedExponent}`;
+            };
+
+            return matrix.flat().map(formatNumber).join(' ');
+        }
+
+        // --- SIMPLIFIED Game Loop for Keyboard Control ---
+        function gameLoop() {
+            if (!isPlaying) {
+                const activeActions = [];
+                if (keysPressed['w']) activeActions.push('move_forward');
+                if (keysPressed['s']) activeActions.push('move_backward');
+                if (keysPressed['a']) activeActions.push('strafe_left');
+                if (keysPressed['d']) activeActions.push('strafe_right');
+                if (keysPressed['arrowleft']) activeActions.push('turn_left');
+                if (keysPressed['arrowright']) activeActions.push('turn_right');
+                if (keysPressed['x']) activeActions.push('move_up');
+                if (keysPressed['z']) activeActions.push('move_down');
+
+                if (activeActions.length > 0) {
+                    handleAction(activeActions);
+                }
+            }
+            requestAnimationFrame(gameLoop);
+        }
+
+        // --- Event Listeners (Unchanged) ---
+        document.addEventListener('keydown', (event) => {
+            const key = event.key.toLowerCase();
+            if (!isPlaying) keysPressed[key] = true;
+            if (event.repeat) return;
+            if (key === 'n') addWaypoint('normal');
+            if (key === 'b') addWaypoint('scan_start');
+            if (key === 'm') addWaypoint('scan_stop');
+        });
+        document.addEventListener('keyup', (event) => { keysPressed[event.key.toLowerCase()] = false; });
+
+        // --- Initial Load ---
+        window.onload = async () => {
+            await renderPose({position: state.position, yaw: state.yaw});
+            gameLoop();
+        };
+    </script>
+</body>
+</html>

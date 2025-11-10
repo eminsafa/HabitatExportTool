@@ -1,0 +1,10 @@
+name: habitat-export
+channels:
+  - aihabitat
+  - conda-forge
+dependencies:
+  - python=3.9
+  - habitat-sim=0.2.4
+  - pip
+  - pip:
+      - flask
